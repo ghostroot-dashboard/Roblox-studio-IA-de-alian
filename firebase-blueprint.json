@@ -1,0 +1,127 @@
+{
+  "entities": {
+    "User": {
+      "title": "User",
+      "description": "User profile for StudioForge AI",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "maxLength": 128 },
+        "email": { "type": "string", "maxLength": 256 },
+        "displayName": { "type": "string", "maxLength": 128 },
+        "photoURL": { "type": "string", "maxLength": 512 },
+        "theme": { "type": "string", "enum": ["dark", "light"] },
+        "createdAt": { "type": "string", "maxLength": 64 }
+      },
+      "required": ["uid", "email", "displayName", "createdAt"]
+    },
+    "Project": {
+      "title": "Project",
+      "description": "Roblox Studio project managed by the user",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "userId": { "type": "string", "maxLength": 128 },
+        "name": { "type": "string", "maxLength": 128 },
+        "description": { "type": "string", "maxLength": 500 },
+        "robloxStatus": { "type": "string", "enum": ["disconnected", "pairing", "connected"] },
+        "robloxPlaceId": { "type": "string", "maxLength": 64 },
+        "lastConnectedAt": { "type": "string", "maxLength": 64 },
+        "createdAt": { "type": "string", "maxLength": 64 },
+        "updatedAt": { "type": "string", "maxLength": 64 }
+      },
+      "required": ["id", "userId", "name", "robloxStatus", "createdAt", "updatedAt"]
+    },
+    "Conversation": {
+      "title": "Conversation",
+      "description": "Chat session with AI for a project",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "userId": { "type": "string", "maxLength": 128 },
+        "projectId": { "type": "string", "maxLength": 128 },
+        "title": { "type": "string", "maxLength": 128 },
+        "createdAt": { "type": "string", "maxLength": 64 },
+        "updatedAt": { "type": "string", "maxLength": 64 }
+      },
+      "required": ["id", "userId", "projectId", "title", "createdAt", "updatedAt"]
+    },
+    "Message": {
+      "title": "Message",
+      "description": "Message exchanged between user and AI assistant",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "userId": { "type": "string", "maxLength": 128 },
+        "conversationId": { "type": "string", "maxLength": 128 },
+        "projectId": { "type": "string", "maxLength": 128 },
+        "role": { "type": "string", "enum": ["user", "assistant", "system"] },
+        "content": { "type": "string", "maxLength": 50000 },
+        "commandsJson": { "type": "string", "maxLength": 50000 },
+        "createdAt": { "type": "string", "maxLength": 64 }
+      },
+      "required": ["id", "userId", "conversationId", "projectId", "role", "content", "createdAt"]
+    },
+    "GeneratedFile": {
+      "title": "GeneratedFile",
+      "description": "Luau script or Roblox asset file generated for a project",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "userId": { "type": "string", "maxLength": 128 },
+        "projectId": { "type": "string", "maxLength": 128 },
+        "name": { "type": "string", "maxLength": 128 },
+        "path": { "type": "string", "maxLength": 256 },
+        "content": { "type": "string", "maxLength": 100000 },
+        "originalContent": { "type": "string", "maxLength": 100000 },
+        "action": { "type": "string", "enum": ["create_script", "update_script", "delete_object", "modify_properties", "create_gui", "create_model"] },
+        "status": { "type": "string", "enum": ["draft", "applied", "rejected"] },
+        "updatedAt": { "type": "string", "maxLength": 64 }
+      },
+      "required": ["id", "userId", "projectId", "name", "path", "content", "status", "updatedAt"]
+    },
+    "RobloxConnection": {
+      "title": "RobloxConnection",
+      "description": "Connection bridge state between web app and Roblox Studio plugin",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "userId": { "type": "string", "maxLength": 128 },
+        "projectId": { "type": "string", "maxLength": 128 },
+        "connectionId": { "type": "string", "maxLength": 128 },
+        "status": { "type": "string", "enum": ["disconnected", "pairing", "connected"] },
+        "pairingCode": { "type": "string", "maxLength": 32 },
+        "pluginVersion": { "type": "string", "maxLength": 32 },
+        "lastConnectedAt": { "type": "string", "maxLength": 64 },
+        "lastPingAt": { "type": "string", "maxLength": 64 },
+        "updatedAt": { "type": "string", "maxLength": 64 }
+      },
+      "required": ["id", "userId", "projectId", "connectionId", "status", "pairingCode", "updatedAt"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": "User",
+      "description": "User account documents stored per UID"
+    },
+    "/projects/{projectId}": {
+      "schema": "Project",
+      "description": "User projects for Roblox Studio games"
+    },
+    "/conversations/{conversationId}": {
+      "schema": "Conversation",
+      "description": "AI conversations linked to a project"
+    },
+    "/messages/{messageId}": {
+      "schema": "Message",
+      "description": "Chat messages between user and AI"
+    },
+    "/generatedFiles/{fileId}": {
+      "schema": "GeneratedFile",
+      "description": "Roblox Luau scripts and configuration files"
+    },
+    "/robloxConnections/{connectionId}": {
+      "schema": "RobloxConnection",
+      "description": "Roblox Studio bridge pairing and status"
+    }
+  }
+}

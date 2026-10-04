@@ -1,0 +1,138 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Default deny all
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function isSignedIn() {
+      return request.auth != null && request.auth.uid != null;
+    }
+
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    // Entity Validators
+    function isValidUser(data) {
+      return data.uid is string && data.uid == request.auth.uid &&
+             data.email is string && data.email.size() <= 256 &&
+             data.displayName is string && data.displayName.size() <= 128 &&
+             (!('photoURL' in data) || (data.photoURL is string && data.photoURL.size() <= 512)) &&
+             (!('theme' in data) || (data.theme in ['dark', 'light'])) &&
+             data.createdAt is string && data.createdAt.size() <= 64;
+    }
+
+    function isValidProject(data) {
+      return data.id is string && isValidId(data.id) &&
+             data.userId is string && data.userId == request.auth.uid &&
+             data.name is string && data.name.size() > 0 && data.name.size() <= 128 &&
+             (!('description' in data) || (data.description is string && data.description.size() <= 500)) &&
+             data.robloxStatus in ['disconnected', 'pairing', 'connected'] &&
+             (!('robloxPlaceId' in data) || (data.robloxPlaceId is string && data.robloxPlaceId.size() <= 64)) &&
+             (!('lastConnectedAt' in data) || (data.lastConnectedAt is string && data.lastConnectedAt.size() <= 64)) &&
+             data.createdAt is string && data.createdAt.size() <= 64 &&
+             data.updatedAt is string && data.updatedAt.size() <= 64;
+    }
+
+    function isValidConversation(data) {
+      return data.id is string && isValidId(data.id) &&
+             data.userId is string && data.userId == request.auth.uid &&
+             data.projectId is string && isValidId(data.projectId) &&
+             data.title is string && data.title.size() > 0 && data.title.size() <= 128 &&
+             data.createdAt is string && data.createdAt.size() <= 64 &&
+             data.updatedAt is string && data.updatedAt.size() <= 64;
+    }
+
+    function isValidMessage(data) {
+      return data.id is string && isValidId(data.id) &&
+             data.userId is string && data.userId == request.auth.uid &&
+             data.conversationId is string && isValidId(data.conversationId) &&
+             data.projectId is string && isValidId(data.projectId) &&
+             data.role in ['user', 'assistant', 'system'] &&
+             data.content is string && data.content.size() <= 50000 &&
+             (!('commandsJson' in data) || (data.commandsJson is string && data.commandsJson.size() <= 50000)) &&
+             data.createdAt is string && data.createdAt.size() <= 64;
+    }
+
+    function isValidGeneratedFile(data) {
+      return data.id is string && isValidId(data.id) &&
+             data.userId is string && data.userId == request.auth.uid &&
+             data.projectId is string && isValidId(data.projectId) &&
+             data.name is string && data.name.size() > 0 && data.name.size() <= 128 &&
+             data.path is string && data.path.size() > 0 && data.path.size() <= 256 &&
+             data.content is string && data.content.size() <= 100000 &&
+             (!('originalContent' in data) || (data.originalContent is string && data.originalContent.size() <= 100000)) &&
+             (!('action' in data) || (data.action in ['create_script', 'update_script', 'delete_object', 'modify_properties', 'create_gui', 'create_model'])) &&
+             data.status in ['draft', 'applied', 'rejected'] &&
+             data.updatedAt is string && data.updatedAt.size() <= 64;
+    }
+
+    function isValidRobloxConnection(data) {
+      return data.id is string && isValidId(data.id) &&
+             data.userId is string && data.userId == request.auth.uid &&
+             data.projectId is string && isValidId(data.projectId) &&
+             data.connectionId is string && data.connectionId.size() <= 128 &&
+             data.status in ['disconnected', 'pairing', 'connected'] &&
+             data.pairingCode is string && data.pairingCode.size() <= 32 &&
+             (!('pluginVersion' in data) || (data.pluginVersion is string && data.pluginVersion.size() <= 32)) &&
+             (!('lastConnectedAt' in data) || (data.lastConnectedAt is string && data.lastConnectedAt.size() <= 64)) &&
+             (!('lastPingAt' in data) || (data.lastPingAt is string && data.lastPingAt.size() <= 64)) &&
+             data.updatedAt is string && data.updatedAt.size() <= 64;
+    }
+
+    // Rules for Collections
+    match /users/{userId} {
+      allow get: if isValidId(userId) && isOwner(userId);
+      allow create: if isValidId(userId) && isOwner(userId) && isValidUser(request.resource.data);
+      allow update: if isValidId(userId) && isOwner(userId) && isValidUser(request.resource.data) && request.resource.data.uid == resource.data.uid;
+      allow delete: if isValidId(userId) && isOwner(userId);
+    }
+
+    match /projects/{projectId} {
+      allow get: if isValidId(projectId) && isSignedIn() && resource.data.userId == request.auth.uid;
+      allow list: if isSignedIn() && resource.data.userId == request.auth.uid;
+      allow create: if isValidId(projectId) && isSignedIn() && request.resource.data.userId == request.auth.uid && isValidProject(request.resource.data);
+      allow update: if isValidId(projectId) && isSignedIn() && resource.data.userId == request.auth.uid && request.resource.data.userId == resource.data.userId && isValidProject(request.resource.data);
+      allow delete: if isValidId(projectId) && isSignedIn() && resource.data.userId == request.auth.uid;
+    }
+
+    match /conversations/{conversationId} {
+      allow get: if isValidId(conversationId) && isSignedIn() && resource.data.userId == request.auth.uid;
+      allow list: if isSignedIn() && resource.data.userId == request.auth.uid;
+      allow create: if isValidId(conversationId) && isSignedIn() && request.resource.data.userId == request.auth.uid && isValidConversation(request.resource.data);
+      allow update: if isValidId(conversationId) && isSignedIn() && resource.data.userId == request.auth.uid && request.resource.data.userId == resource.data.userId && isValidConversation(request.resource.data);
+      allow delete: if isValidId(conversationId) && isSignedIn() && resource.data.userId == request.auth.uid;
+    }
+
+    match /messages/{messageId} {
+      allow get: if isValidId(messageId) && isSignedIn() && resource.data.userId == request.auth.uid;
+      allow list: if isSignedIn() && resource.data.userId == request.auth.uid;
+      allow create: if isValidId(messageId) && isSignedIn() && request.resource.data.userId == request.auth.uid && isValidMessage(request.resource.data);
+      allow update: if isValidId(messageId) && isSignedIn() && resource.data.userId == request.auth.uid && request.resource.data.userId == resource.data.userId && isValidMessage(request.resource.data);
+      allow delete: if isValidId(messageId) && isSignedIn() && resource.data.userId == request.auth.uid;
+    }
+
+    match /generatedFiles/{fileId} {
+      allow get: if isValidId(fileId) && isSignedIn() && resource.data.userId == request.auth.uid;
+      allow list: if isSignedIn() && resource.data.userId == request.auth.uid;
+      allow create: if isValidId(fileId) && isSignedIn() && request.resource.data.userId == request.auth.uid && isValidGeneratedFile(request.resource.data);
+      allow update: if isValidId(fileId) && isSignedIn() && resource.data.userId == request.auth.uid && request.resource.data.userId == resource.data.userId && isValidGeneratedFile(request.resource.data);
+      allow delete: if isValidId(fileId) && isSignedIn() && resource.data.userId == request.auth.uid;
+    }
+
+    match /robloxConnections/{connectionId} {
+      allow get: if isValidId(connectionId) && isSignedIn() && resource.data.userId == request.auth.uid;
+      allow list: if isSignedIn() && resource.data.userId == request.auth.uid;
+      allow create: if isValidId(connectionId) && isSignedIn() && request.resource.data.userId == request.auth.uid && isValidRobloxConnection(request.resource.data);
+      allow update: if isValidId(connectionId) && isSignedIn() && resource.data.userId == request.auth.uid && request.resource.data.userId == resource.data.userId && isValidRobloxConnection(request.resource.data);
+      allow delete: if isValidId(connectionId) && isSignedIn() && resource.data.userId == request.auth.uid;
+    }
+  }
+}

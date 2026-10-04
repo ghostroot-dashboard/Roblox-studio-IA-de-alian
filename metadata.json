@@ -1,0 +1,6 @@
+{
+  "name": "StudioForge AI",
+  "description": "Plataforma profesional con IA para crear, editar y administrar proyectos y scripts de Roblox Studio.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
