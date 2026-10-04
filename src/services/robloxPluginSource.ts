@@ -185,6 +185,23 @@ local connectCorner = Instance.new("UICorner")
 connectCorner.CornerRadius = UDim.new(0, 6)
 connectCorner.Parent = connectButton
 
+-- BOTÓN PROBAR PING AL BACKEND
+local pingBackendButton = Instance.new("TextButton")
+pingBackendButton.Text = "Probar Conexión (Ping)"
+pingBackendButton.Font = Enum.Font.GothamBold
+pingBackendButton.TextSize = 12
+pingBackendButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+pingBackendButton.BackgroundColor3 = Color3.fromRGB(40, 140, 75)
+pingBackendButton.Size = UDim2.new(1, 0, 0, 30)
+pingBackendButton.BorderSizePixel = 0
+pingBackendButton.Visible = false
+pingBackendButton.LayoutOrder = 5
+pingBackendButton.Parent = mainFrame
+
+local pingCorner = Instance.new("UICorner")
+pingCorner.CornerRadius = UDim.new(0, 6)
+pingCorner.Parent = pingBackendButton
+
 -- BOTÓN DESCONECTAR
 local disconnectButton = Instance.new("TextButton")
 disconnectButton.Text = "Desconectar"
@@ -192,10 +209,10 @@ disconnectButton.Font = Enum.Font.GothamBold
 disconnectButton.TextSize = 12
 disconnectButton.TextColor3 = Color3.fromRGB(255, 255, 255)
 disconnectButton.BackgroundColor3 = Color3.fromRGB(180, 45, 45)
-disconnectButton.Size = UDim2.new(1, 0, 0, 32)
+disconnectButton.Size = UDim2.new(1, 0, 0, 30)
 disconnectButton.BorderSizePixel = 0
 disconnectButton.Visible = false
-disconnectButton.LayoutOrder = 5
+disconnectButton.LayoutOrder = 6
 disconnectButton.Parent = mainFrame
 
 local discCorner = Instance.new("UICorner")
@@ -274,8 +291,15 @@ end
 -- EJECUTOR DE COMANDOS PERMITIDOS (SIN loadstring NI CÓDIGO ARBITRARIO)
 local function executePermittedCommand(cmd): (boolean, string)
     local cmdType = cmd.type
-    local name = cmd.name
+    local name = cmd.name or "PING"
     local locationPath = cmd.parent or cmd.location or "Workspace"
+
+    -- 0. PRUEBA DE CONEXIÓN PING / PONG (No crea ni altera objetos en Roblox Studio)
+    if cmdType == "ping" then
+        messageLabel.Text = "Conexión funcionando."
+        messageLabel.TextColor3 = Color3.fromRGB(75, 230, 120)
+        return true, "PONG"
+    end
 
     -- Validar contenedor
     local found, parentInstance, errLoc = resolveParent(locationPath)
@@ -518,8 +542,10 @@ connectButton.MouseButton1Click:Connect(function()
             projectInfoLabel.Visible = true
 
             connectSection.Visible = false
+            pingBackendButton.Visible = true
             disconnectButton.Visible = true
-            messageLabel.Text = "¡Roblox Studio conectado exitosamente!"
+            messageLabel.Text = "Conexión funcionando."
+            messageLabel.TextColor3 = Color3.fromRGB(75, 230, 120)
             addHistoryEntry(true, "Enlace establecido con " .. (data.projectName or "Proyecto"))
 
             startPolling()
@@ -527,6 +553,47 @@ connectButton.MouseButton1Click:Connect(function()
             statusValueLabel.Text = "● Desconectado"
             statusValueLabel.TextColor3 = Color3.fromRGB(240, 75, 75)
             messageLabel.Text = data.error or "Error de emparejamiento. Verifica el código."
+        end
+    end)
+end)
+
+-- PROBAR PING AL BACKEND DESDE EL PLUGIN
+pingBackendButton.MouseButton1Click:Connect(function()
+    if not isConnected or not sessionToken then
+        messageLabel.Text = "Debes conectar el plugin primero."
+        return
+    end
+
+    messageLabel.Text = "Enviando PING al backend..."
+    messageLabel.TextColor3 = Color3.fromRGB(240, 190, 60)
+
+    task.spawn(function()
+        local success, response = pcall(function()
+            return HttpService:RequestAsync({
+                Url = serverUrl .. "/api/bridge/plugin-ping",
+                Method = "POST",
+                Headers = { ["Content-Type"] = "application/json" },
+                Body = HttpService:JSONEncode({ sessionToken = sessionToken })
+            })
+        end)
+
+        if success and response.Success then
+            local parseOk, resData = pcall(function()
+                return HttpService:JSONDecode(response.Body)
+            end)
+
+            if parseOk and resData.success and resData.message == "PONG" then
+                messageLabel.Text = "Conexión funcionando."
+                messageLabel.TextColor3 = Color3.fromRGB(75, 230, 120)
+                addHistoryEntry(true, "PING enviado -> PONG recibido")
+                print("[StudioForge AI] PONG recibido del backend. Conexión funcionando.")
+            else
+                messageLabel.Text = "Respuesta no esperada del backend."
+                messageLabel.TextColor3 = Color3.fromRGB(250, 100, 100)
+            end
+        else
+            messageLabel.Text = "Error al contactar al backend."
+            messageLabel.TextColor3 = Color3.fromRGB(250, 100, 100)
         end
     end)
 end)
@@ -559,6 +626,7 @@ disconnectButton.MouseButton1Click:Connect(function()
     statusValueLabel.TextColor3 = Color3.fromRGB(240, 75, 75)
     projectInfoLabel.Visible = false
     connectSection.Visible = true
+    pingBackendButton.Visible = false
     disconnectButton.Visible = false
     messageLabel.Text = "Desconectado de StudioForge AI."
     addHistoryEntry(false, "Desconexión manual efectuada")

@@ -1,8 +1,9 @@
 import express from 'express';
+import fs from 'fs';
 import { createServer as createViteServer } from 'vite';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { bridgeManager } from './src/server/bridgeManager.js';
+import { bridgeManager } from './src/server/bridgeManager.ts';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -42,15 +43,31 @@ app.post('/api/bridge/create-pairing', (req, res) => {
 });
 
 // 2. Plugin de Roblox Studio introduce código para verificar y emparejar
+// Valida: usuario, proyecto, código y expiración
 app.post('/api/bridge/pair', (req, res) => {
-  const { pairingCode, pluginVersion } = req.body;
+  const { pairingCode, pluginVersion, projectId, userId } = req.body;
   if (!pairingCode) {
     return res.status(400).json({ success: false, error: 'Código de emparejamiento requerido.' });
   }
 
-  const result = bridgeManager.verifyAndPair(pairingCode, pluginVersion);
+  const result = bridgeManager.verifyAndPair(pairingCode, pluginVersion, projectId, userId);
   if (!result.success) {
     return res.status(400).json(result);
+  }
+
+  return res.json(result);
+});
+
+// 2b. Plugin de Roblox Studio envía un PING de prueba al backend
+app.post('/api/bridge/plugin-ping', (req, res) => {
+  const { sessionToken } = req.body;
+  if (!sessionToken) {
+    return res.status(401).json({ success: false, error: 'sessionToken no provisto.' });
+  }
+
+  const result = bridgeManager.handlePluginPing(sessionToken);
+  if (!result.success) {
+    return res.status(401).json(result);
   }
 
   return res.json(result);
@@ -129,6 +146,24 @@ app.post('/api/bridge/command', (req, res) => {
   return res.json(result);
 });
 
+// 5b. Web envía un PING de prueba al plugin de Roblox Studio
+app.post('/api/bridge/ping', (req, res) => {
+  const { projectId } = req.body;
+  if (!projectId) {
+    return res.status(400).json({ success: false, error: 'projectId es requerido.' });
+  }
+
+  const result = bridgeManager.enqueueCommand({
+    projectId,
+    type: 'ping',
+    name: 'PING',
+    parent: 'Workspace',
+    location: 'Workspace',
+  });
+
+  return res.json(result);
+});
+
 // 6. Plugin de Roblox Studio reporta el resultado de ejecución de un comando
 app.post('/api/bridge/result', (req, res) => {
   const { sessionToken, commandId, success, message, error } = req.body;
@@ -176,9 +211,13 @@ async function startServer() {
     });
     app.use(vite.middlewares);
   } else {
-    app.use(express.static(path.resolve(__dirname, 'dist')));
+    const distPath = fs.existsSync(path.resolve(__dirname, 'dist', 'assets'))
+      ? path.resolve(__dirname, 'dist')
+      : __dirname;
+
+    app.use(express.static(distPath));
     app.get('*', (req, res) => {
-      res.sendFile(path.resolve(__dirname, 'dist', 'index.html'));
+      res.sendFile(path.resolve(distPath, 'index.html'));
     });
   }
 

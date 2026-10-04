@@ -64,38 +64,84 @@ class BridgeManager {
   }
 
   /**
-   * Llamado por el Plugin de Roblox Studio para canjear el código de emparejamiento
+   * Llamado por el Plugin de Roblox Studio para canjear el código de emparejamiento.
+   * Valida estrictamente: código, expiración, existencia de usuario y proyecto asociado.
    */
-  public verifyAndPair(pairingCode: string, pluginVersion?: string): {
+  public verifyAndPair(
+    pairingCode: string,
+    pluginVersion?: string,
+    expectedProjectId?: string,
+    expectedUserId?: string
+  ): {
     success: boolean;
     sessionToken?: string;
     projectId?: string;
     projectName?: string;
+    userId?: string;
     error?: string;
   } {
+    if (!pairingCode || typeof pairingCode !== 'string' || pairingCode.trim() === '') {
+      return {
+        success: false,
+        error: 'El código de emparejamiento es obligatorio y no puede estar vacío.',
+      };
+    }
+
     const cleanCode = pairingCode.trim().toUpperCase();
     const session = this.sessionsByCode.get(cleanCode);
 
     if (!session) {
       return {
         success: false,
-        error: 'Código de emparejamiento no encontrado o no válido.',
+        error: 'Código de emparejamiento no encontrado o ya utilizado. Genera uno nuevo en la web.',
       };
     }
 
-    // Verificar si expiró
-    if (new Date(session.expiresAt).getTime() < Date.now()) {
+    // 1. Validación de expiración
+    const expiresTime = new Date(session.expiresAt).getTime();
+    const nowTime = Date.now();
+    if (expiresTime < nowTime) {
       this.sessionsByCode.delete(cleanCode);
+      session.status = 'disconnected';
       return {
         success: false,
-        error: 'El código de emparejamiento ha expirado. Genera uno nuevo en la web.',
+        error: 'El código de emparejamiento ha expirado. Los códigos son válidos durante 10 minutos.',
       };
     }
 
-    // Código de un solo uso: eliminar el código para no reutilizarlo
+    // 2. Validación de usuario y proyecto
+    if (!session.userId || session.userId.trim() === '') {
+      return {
+        success: false,
+        error: 'Error de integridad: la sesión no tiene un usuario propietario válido.',
+      };
+    }
+
+    if (!session.projectId || session.projectId.trim() === '') {
+      return {
+        success: false,
+        error: 'Error de integridad: la sesión no está asociada a ningún proyecto válido.',
+      };
+    }
+
+    if (expectedProjectId && session.projectId !== expectedProjectId) {
+      return {
+        success: false,
+        error: `El código no corresponde al proyecto especificado (${expectedProjectId}).`,
+      };
+    }
+
+    if (expectedUserId && session.userId !== expectedUserId) {
+      return {
+        success: false,
+        error: 'El código no corresponde al usuario autenticado.',
+      };
+    }
+
+    // 3. Código de un solo uso: eliminar el código del índice de códigos pendientes
     this.sessionsByCode.delete(cleanCode);
 
-    // Actualizar estado a Conectado
+    // 4. Actualizar estado a Conectado en ambos lados
     session.status = 'connected';
     session.pluginVersion = pluginVersion || '1.0.0';
     session.lastPingAt = new Date().toISOString();
@@ -105,6 +151,56 @@ class BridgeManager {
       sessionToken: session.sessionToken,
       projectId: session.projectId,
       projectName: session.projectName,
+      userId: session.userId,
+    };
+  }
+
+  /**
+   * Procesa un mensaje de prueba PING enviado directamente desde el Plugin de Roblox Studio
+   */
+  public handlePluginPing(sessionToken: string): {
+    success: boolean;
+    message?: string;
+    serverTime?: string;
+    projectName?: string;
+    projectId?: string;
+    error?: string;
+  } {
+    const session = this.sessionsByToken.get(sessionToken);
+    if (!session) {
+      return { success: false, error: 'Sesión no autorizada o no encontrada.' };
+    }
+
+    if (session.status !== 'connected') {
+      return { success: false, error: 'El plugin no está en estado conectado.' };
+    }
+
+    session.lastPingAt = new Date().toISOString();
+
+    // Registrar en historial el PING recibido desde el plugin
+    const historyItem: CommandHistoryItem = {
+      id: `ping_${Date.now().toString(36)}_${Math.random().toString(36).substring(2, 6)}`,
+      commandId: `ping_${Date.now().toString(36)}`,
+      projectId: session.projectId,
+      type: 'ping',
+      name: 'Plugin Ping (Roblox -> Backend)',
+      location: 'RobloxStudioPlugin',
+      status: 'executed',
+      resultMessage: 'PONG',
+      createdAt: new Date().toISOString(),
+      executedAt: new Date().toISOString(),
+    };
+
+    const history = this.commandHistory.get(session.projectId) || [];
+    history.unshift(historyItem);
+    this.commandHistory.set(session.projectId, history.slice(0, 50));
+
+    return {
+      success: true,
+      message: 'PONG',
+      serverTime: new Date().toISOString(),
+      projectName: session.projectName,
+      projectId: session.projectId,
     };
   }
 
@@ -142,6 +238,7 @@ class BridgeManager {
    */
   public validateCommand(cmd: Partial<BridgeCommandPayload>): { valid: boolean; error?: string } {
     const allowedTypes: AllowedRobloxCommandType[] = [
+      'ping',
       'create_part',
       'delete_object',
       'rename_object',

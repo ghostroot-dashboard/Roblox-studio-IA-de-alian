@@ -267,8 +267,15 @@ end
 -- EJECUTOR DE COMANDOS PERMITIDOS
 local function executePermittedCommand(cmd): (boolean, string)
     local cmdType = cmd.type
-    local name = cmd.name
+    local name = cmd.name or "PING"
     local locationPath = cmd.parent or cmd.location or "Workspace"
+
+    -- 0. PRUEBA DE CONEXIÓN PING / PONG (No crea ni altera objetos en Roblox Studio)
+    if cmdType == "ping" then
+        messageLabel.Text = "Conexión funcionando."
+        messageLabel.TextColor3 = Color3.fromRGB(75, 230, 120)
+        return true, "PONG"
+    end
 
     local found, parentInstance, errLoc = resolveParent(locationPath)
     if not found or not parentInstance then
@@ -502,7 +509,8 @@ connectButton.MouseButton1Click:Connect(function()
 
             connectSection.Visible = false
             disconnectButton.Visible = true
-            messageLabel.Text = "¡Roblox Studio conectado exitosamente!"
+            messageLabel.Text = "Conexión funcionando."
+            messageLabel.TextColor3 = Color3.fromRGB(75, 230, 120)
             addHistoryEntry(true, "Enlace establecido con " .. (data.projectName or "Proyecto"))
 
             startPolling()

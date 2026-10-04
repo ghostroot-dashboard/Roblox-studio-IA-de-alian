@@ -1,4 +1,5 @@
 export type RobloxActionType =
+  | 'ping'
   | 'create_script'
   | 'update_script'
   | 'delete_object'

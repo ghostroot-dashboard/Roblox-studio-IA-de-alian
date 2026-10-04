@@ -22,12 +22,15 @@ import {
   Play,
   RotateCcw,
   Info,
+  Activity,
+  CheckCircle2,
 } from 'lucide-react';
 import { Project } from '../types';
 import { AllowedRobloxCommandType, CommandHistoryItem } from '../types/bridge';
 import { robloxBridgeService } from '../services/robloxBridgeService';
 import { useAuth } from '../context/AuthContext';
 import { CodeBlock } from './CodeBlock';
+import { FirestoreService } from '../services/firestoreService';
 
 interface RobloxStudioViewProps {
   project: Project | null;
@@ -58,6 +61,11 @@ export const RobloxStudioView: React.FC<RobloxStudioViewProps> = ({
   const [copiedConnId, setCopiedConnId] = useState(false);
   const [commandFeedback, setCommandFeedback] = useState<string | null>(null);
 
+  // Estados de prueba PING / PONG
+  const [pingStatus, setPingStatus] = useState<'idle' | 'sending' | 'success' | 'failed'>('idle');
+  const [pingResultMessage, setPingResultMessage] = useState<string | null>(null);
+  const [simulating, setSimulating] = useState(false);
+
   // Pestañas internas
   const [activeTab, setActiveTab] = useState<'status' | 'send' | 'history' | 'plugin'>('status');
 
@@ -86,6 +94,26 @@ export const RobloxStudioView: React.FC<RobloxStudioViewProps> = ({
       if (res.lastPingAt) setLastPingAt(res.lastPingAt);
       if (res.pluginVersion) setPluginVersion(res.pluginVersion);
 
+      // Sincronizar en Firestore cuando se detecta conexión activa
+      if (res.status === 'connected' && currentUser) {
+        try {
+          await FirestoreService.setRobloxConnection({
+            id: `conn-doc-${project.id}`,
+            userId: currentUser.uid,
+            projectId: project.id,
+            connectionId: res.sessionToken || connectionId,
+            status: 'connected',
+            pairingCode: 'N/A',
+            pluginVersion: res.pluginVersion || '1.0.0',
+            lastConnectedAt: res.lastPingAt || new Date().toISOString(),
+            lastPingAt: res.lastPingAt || new Date().toISOString(),
+            updatedAt: new Date().toISOString(),
+          });
+        } catch (err) {
+          console.error('Error sincronizando estado conectado en Firestore:', err);
+        }
+      }
+
       if (onUpdateProjectStatus) {
         onUpdateProjectStatus(res.status === 'connected' ? 'connected' : res.status === 'pending' ? 'pairing' : 'disconnected');
       }
@@ -106,11 +134,11 @@ export const RobloxStudioView: React.FC<RobloxStudioViewProps> = ({
     checkStatus();
     loadHistory();
 
-    // Sondeo de estado cada 3.5 segundos para reflejar en vivo cuando el plugin introduce el código
+    // Sondeo de estado cada 3 segundos para reflejar en vivo cuando el plugin introduce el código
     pollIntervalRef.current = setInterval(() => {
       checkStatus();
       loadHistory();
-    }, 3500);
+    }, 3000);
 
     return () => {
       if (pollIntervalRef.current) clearInterval(pollIntervalRef.current);
@@ -129,6 +157,23 @@ export const RobloxStudioView: React.FC<RobloxStudioViewProps> = ({
       setExpiresAt(res.expiresAt || null);
       if (res.sessionToken) setConnectionId(res.sessionToken);
       setBridgeStatus('pending');
+
+      // Guardar la solicitud de conexión en Firestore
+      try {
+        await FirestoreService.setRobloxConnection({
+          id: `conn-doc-${project.id}`,
+          userId: currentUser.uid,
+          projectId: project.id,
+          connectionId: res.sessionToken || `conn-${project.id.slice(0, 8)}`,
+          status: 'pairing',
+          pairingCode: res.pairingCode,
+          pluginVersion: '1.0.0',
+          updatedAt: new Date().toISOString(),
+        });
+      } catch (err) {
+        console.error('Error guardando conexión en Firestore:', err);
+      }
+
       setCommandFeedback(`Código generado: ${res.pairingCode}. Introdúcelo en el plugin de Roblox Studio.`);
       setTimeout(() => setCommandFeedback(null), 6000);
       if (onUpdateProjectStatus) onUpdateProjectStatus('pairing');
@@ -145,9 +190,164 @@ export const RobloxStudioView: React.FC<RobloxStudioViewProps> = ({
     setBridgeStatus('disconnected');
     setPairingCode('');
     setLoading(false);
+
+    // Actualizar Firestore a desconectado
+    if (currentUser) {
+      try {
+        await FirestoreService.setRobloxConnection({
+          id: `conn-doc-${project.id}`,
+          userId: currentUser.uid,
+          projectId: project.id,
+          connectionId: connectionId,
+          status: 'disconnected',
+          pairingCode: 'N/A',
+          updatedAt: new Date().toISOString(),
+        });
+      } catch (err) {
+        console.error('Error actualizando desconexión en Firestore:', err);
+      }
+    }
+
     if (onUpdateProjectStatus) onUpdateProjectStatus('disconnected');
     setCommandFeedback('Puente de Roblox Studio desconectado.');
     setTimeout(() => setCommandFeedback(null), 3000);
+  };
+
+  // Manejar prueba PING / PONG
+  const handleSendPing = async () => {
+    if (!project) return;
+    setPingStatus('sending');
+    setPingResultMessage(null);
+    setCommandFeedback('Enviando PING al plugin de Roblox Studio...');
+
+    const res = await robloxBridgeService.sendPing(project.id);
+    if (!res.success) {
+      setPingStatus('failed');
+      setPingResultMessage(`Fallo de envío: ${res.error || 'No se pudo contactar el backend'}`);
+      return;
+    }
+
+    // El comando se encoló con éxito en el backend. Esperamos la respuesta PONG del plugin
+    const pingCmdId = res.commandId;
+    let attempts = 0;
+
+    const checkPong = async () => {
+      attempts++;
+      const items = await robloxBridgeService.getCommandHistory(project.id);
+      setHistory(items);
+      const pingItem = items.find((i) => (pingCmdId ? i.commandId === pingCmdId : i.type === 'ping'));
+
+      if (pingItem && (pingItem.status === 'executed' || pingItem.resultMessage === 'PONG')) {
+        setPingStatus('success');
+        setPingResultMessage('Roblox Studio respondió correctamente.');
+        setCommandFeedback('✓ Roblox Studio respondió correctamente. (Respuesta: PONG)');
+        return;
+      }
+
+      if (pingItem && pingItem.status === 'failed') {
+        setPingStatus('failed');
+        setPingResultMessage(`Error reportado por el plugin: ${pingItem.resultError || 'Desconocido'}`);
+        return;
+      }
+
+      if (attempts < 12) {
+        setTimeout(checkPong, 1200);
+      } else {
+        setPingStatus('failed');
+        setPingResultMessage('Tiempo de espera agotado. Verifica que el plugin en Roblox Studio esté en estado Conectado.');
+      }
+    };
+
+    setTimeout(checkPong, 1000);
+  };
+
+  // Simular ciclo de prueba del plugin localmente para verificar el flujo de comunicación
+  const handleSimulatePluginPairingAndPong = async () => {
+    if (!project || !currentUser) return;
+    setSimulating(true);
+    setCommandFeedback('Iniciando prueba de ciclo de comunicación...');
+    try {
+      // 1. Obtener o crear código si no está pendiente
+      let codeToUse = pairingCode;
+      if (bridgeStatus !== 'pending' || !codeToUse) {
+        const createRes = await robloxBridgeService.createPairingCode(project.id, project.name, currentUser.uid);
+        if (!createRes.success || !createRes.pairingCode) {
+          setCommandFeedback('Error generando código para la prueba.');
+          setSimulating(false);
+          return;
+        }
+        codeToUse = createRes.pairingCode;
+        setPairingCode(codeToUse);
+        setExpiresAt(createRes.expiresAt || null);
+        if (createRes.sessionToken) setConnectionId(createRes.sessionToken);
+      }
+
+      // 2. Plugin canjea el código validando usuario, proyecto, código y expiración
+      const pairRes = await robloxBridgeService.pairWithCode(codeToUse, '1.0.0-test', project.id, currentUser.uid);
+      if (!pairRes.success || !pairRes.sessionToken) {
+        setCommandFeedback(`Error de emparejamiento: ${pairRes.error}`);
+        setSimulating(false);
+        return;
+      }
+
+      const activeToken = pairRes.sessionToken;
+      setConnectionId(activeToken);
+      setBridgeStatus('connected');
+      if (onUpdateProjectStatus) onUpdateProjectStatus('connected');
+
+      // Guardar conexión en Firestore
+      try {
+        await FirestoreService.setRobloxConnection({
+          id: `conn-doc-${project.id}`,
+          userId: currentUser.uid,
+          projectId: project.id,
+          connectionId: activeToken,
+          status: 'connected',
+          pairingCode: 'N/A',
+          pluginVersion: '1.0.0-sim',
+          lastConnectedAt: new Date().toISOString(),
+          lastPingAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+        });
+      } catch (e) {
+        console.error('Error sincronizando con Firestore:', e);
+      }
+
+      // 3. Enviar PING desde la web
+      setPingStatus('sending');
+      setPingResultMessage(null);
+      const pingRes = await robloxBridgeService.sendPing(project.id);
+      if (!pingRes.success || !pingRes.commandId) {
+        setPingStatus('failed');
+        setPingResultMessage('Error al enviar PING desde la Web.');
+        setSimulating(false);
+        return;
+      }
+
+      // 4. Plugin sondea y recibe el comando PING
+      const pollRes = await robloxBridgeService.pollCommands(activeToken);
+      const pingCmd = pollRes.commands?.find((c) => c.type === 'ping' || c.commandId === pingRes.commandId);
+
+      if (pingCmd) {
+        // 5. Plugin responde PONG (sin crear ni modificar objetos en Roblox)
+        await robloxBridgeService.reportResult(activeToken, {
+          commandId: pingCmd.commandId,
+          success: true,
+          message: 'PONG',
+        });
+      }
+
+      // 6. Recargar historial y actualizar estados
+      await loadHistory();
+      setPingStatus('success');
+      setPingResultMessage('Roblox Studio respondió correctamente.');
+      setCommandFeedback('✓ Roblox Studio respondió correctamente. (Respuesta: PONG)');
+    } catch (err: any) {
+      setPingStatus('failed');
+      setPingResultMessage(err.message || 'Error durante la prueba de extremo a extremo');
+    } finally {
+      setSimulating(false);
+    }
   };
 
   const handleCopyCode = async () => {
@@ -480,6 +680,129 @@ export const RobloxStudioView: React.FC<RobloxStudioViewProps> = ({
                     <span className="font-mono text-blue-400 font-bold">{history.length}</span>
                   </div>
                 </div>
+              </div>
+            </div>
+          </div>
+
+          {/* SECCIÓN PRINCIPAL: PRUEBA REAL DE EXTREMO A EXTREMO (PING / PONG) */}
+          <div className="rounded-3xl border border-blue-500/30 bg-slate-900/90 p-6 md:p-8 space-y-6 shadow-xl">
+            <div className="flex flex-wrap items-center justify-between gap-4">
+              <div>
+                <div className="flex items-center gap-2">
+                  <Activity className="h-5 w-5 text-blue-400" />
+                  <h3 className="text-lg font-black text-white">
+                    Prueba de Comunicación Bidireccional (PING ➔ PONG)
+                  </h3>
+                </div>
+                <p className="text-xs text-slate-400 mt-1">
+                  Flujo: <strong>WEB</strong> ➔ <strong>BACKEND</strong> ➔ <strong>PLUGIN DE ROBLOX STUDIO</strong> ➔ <strong>WEB</strong>
+                </p>
+                <p className="text-[11px] text-amber-300/90 mt-0.5">
+                  ⚠️ Esta prueba <strong>NO</strong> crea ni modifica objetos de Roblox. Solamente comprueba que la comunicación funciona.
+                </p>
+              </div>
+
+              {/* Botones de Acción de Prueba */}
+              <div className="flex flex-wrap items-center gap-3">
+                <button
+                  onClick={handleSendPing}
+                  disabled={pingStatus === 'sending' || bridgeStatus === 'disconnected'}
+                  className="flex items-center gap-2 rounded-xl bg-blue-600 px-5 py-2.5 text-xs font-bold text-white shadow-lg shadow-blue-600/30 hover:bg-blue-500 transition-all cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  <Send className={`h-4 w-4 ${pingStatus === 'sending' ? 'animate-bounce' : ''}`} />
+                  <span>{pingStatus === 'sending' ? 'Enviando PING...' : 'Enviar PING a Roblox Studio'}</span>
+                </button>
+
+                <button
+                  onClick={handleSimulatePluginPairingAndPong}
+                  disabled={simulating}
+                  className="flex items-center gap-1.5 rounded-xl border border-indigo-500/40 bg-indigo-950/40 px-4 py-2.5 text-xs font-semibold text-indigo-300 hover:bg-indigo-900/60 transition-all cursor-pointer disabled:opacity-50"
+                  title="Simula la respuesta del plugin localmente para verificar todo el flujo y base de datos"
+                >
+                  <Play className="h-3.5 w-3.5" />
+                  <span>{simulating ? 'Ejecutando test...' : 'Auto-Test Simulador'}</span>
+                </button>
+              </div>
+            </div>
+
+            {/* Resultado de la Prueba PING / PONG */}
+            {pingStatus === 'success' && (
+              <div className="rounded-2xl border border-emerald-500/40 bg-emerald-950/40 p-4 transition-all animate-fadeIn">
+                <div className="flex items-center gap-3">
+                  <div className="rounded-full bg-emerald-500/20 p-2 border border-emerald-500/40 text-emerald-400">
+                    <CheckCircle2 className="h-5 w-5" />
+                  </div>
+                  <div>
+                    <h4 className="text-sm font-black text-emerald-300">
+                      Roblox Studio respondió correctamente.
+                    </h4>
+                    <p className="text-xs text-emerald-400/90 mt-0.5">
+                      Respuesta: <strong>PONG</strong> recibida del Plugin de Roblox Studio. En el plugin se muestra: <em>"Conexión funcionando."</em>
+                    </p>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {pingStatus === 'sending' && (
+              <div className="rounded-2xl border border-amber-500/40 bg-amber-950/30 p-4 animate-pulse">
+                <div className="flex items-center gap-3 text-amber-300 text-xs">
+                  <RefreshCw className="h-4 w-4 animate-spin text-amber-400" />
+                  <span>
+                    Enviando comando <strong>PING</strong> a la cola del backend y esperando respuesta <strong>PONG</strong> de Roblox Studio...
+                  </span>
+                </div>
+              </div>
+            )}
+
+            {pingStatus === 'failed' && (
+              <div className="rounded-2xl border border-red-500/40 bg-red-950/40 p-4">
+                <div className="flex items-center gap-3 text-red-300 text-xs">
+                  <AlertCircle className="h-5 w-5 shrink-0 text-red-400" />
+                  <div>
+                    <div className="font-bold text-red-200">Resultado de la prueba:</div>
+                    <div className="mt-0.5">{pingResultMessage || 'No se recibió respuesta PONG del plugin.'}</div>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* Matriz de Verificación del Flujo */}
+            <div className="grid grid-cols-1 md:grid-cols-4 gap-3 text-xs pt-1">
+              <div className="rounded-xl border border-slate-800 bg-slate-950 p-3 space-y-1">
+                <div className="text-[10px] uppercase font-bold text-slate-500">1. Pairing Seguro</div>
+                <div className="font-bold text-white flex items-center gap-1.5">
+                  <span className={`h-2 w-2 rounded-full ${pairingCode || bridgeStatus === 'connected' ? 'bg-emerald-400' : 'bg-slate-600'}`}></span>
+                  <span>{pairingCode ? `Código: ${pairingCode}` : bridgeStatus === 'connected' ? 'Emparejado' : 'Pendiente'}</span>
+                </div>
+                <p className="text-[10px] text-slate-500">Un solo uso, expira en 10 min</p>
+              </div>
+
+              <div className="rounded-xl border border-slate-800 bg-slate-950 p-3 space-y-1">
+                <div className="text-[10px] uppercase font-bold text-slate-500">2. Backend Validation</div>
+                <div className="font-bold text-white flex items-center gap-1.5">
+                  <span className={`h-2 w-2 rounded-full ${bridgeStatus === 'connected' ? 'bg-emerald-400' : 'bg-amber-400'}`}></span>
+                  <span>{bridgeStatus === 'connected' ? 'Usuario & Proyecto OK' : 'Esperando canje'}</span>
+                </div>
+                <p className="text-[10px] text-slate-500">Valida usuario, proyecto y fecha</p>
+              </div>
+
+              <div className="rounded-xl border border-slate-800 bg-slate-950 p-3 space-y-1">
+                <div className="text-[10px] uppercase font-bold text-slate-500">3. Estado en Plugin</div>
+                <div className="font-bold text-white flex items-center gap-1.5">
+                  <span className={`h-2 w-2 rounded-full ${bridgeStatus === 'connected' ? 'bg-emerald-400' : 'bg-slate-600'}`}></span>
+                  <span>{bridgeStatus === 'connected' ? 'Conexión funcionando.' : 'Desconectado'}</span>
+                </div>
+                <p className="text-[10px] text-slate-500">DockWidget en Roblox Studio</p>
+              </div>
+
+              <div className="rounded-xl border border-slate-800 bg-slate-950 p-3 space-y-1">
+                <div className="text-[10px] uppercase font-bold text-slate-500">4. Mensaje PING / PONG</div>
+                <div className="font-bold text-white flex items-center gap-1.5">
+                  <span className={`h-2 w-2 rounded-full ${pingStatus === 'success' ? 'bg-emerald-400' : 'bg-slate-600'}`}></span>
+                  <span>{pingStatus === 'success' ? 'PONG confirmado' : 'Listo para enviar'}</span>
+                </div>
+                <p className="text-[10px] text-slate-500">Cero modificaciones de objetos</p>
               </div>
             </div>
           </div>

@@ -1,4 +1,5 @@
 export type AllowedRobloxCommandType =
+  | 'ping'
   | 'create_part'
   | 'delete_object'
   | 'rename_object'
